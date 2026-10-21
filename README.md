@@ -55,3 +55,7 @@ Download payloads are random bytes, so compression cannot inflate the measured s
 
 - Python 3.7 or later
 - A modern browser
+
+## License
+
+MIT. See [LICENSE](LICENSE).
