@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bandwidth Test</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1b1f24; --muted: #65707c;
+    --border: #dde1e6; --accent: #2563eb; --accent-text: #ffffff;
+    --down: #2563eb; --up: #0d9488; --cap: #d97706; --danger: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --card: #171b21; --text: #e6e9ed; --muted: #8b95a1;
+      --border: #2a313a; --accent: #3b82f6; --accent-text: #ffffff;
+      --down: #60a5fa; --up: #2dd4bf; --cap: #f59e0b; --danger: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px; margin-bottom: 16px;
+  }
+  label { font-weight: 600; display: block; margin-bottom: 6px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .row + .row { margin-top: 14px; }
+  input[type=range] { flex: 1; min-width: 160px; accent-color: var(--accent); }
+  input[type=number], select {
+    width: 110px; padding: 6px 8px; border-radius: 6px; font: inherit;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  .check { font-weight: 400; display: flex; gap: 6px; align-items: center; margin: 0; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  button {
+    font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.stop { color: var(--danger); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .meter { text-align: center; }
+  .phase { color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; font-size: 12px; }
+  .speed { font-size: 56px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .speed small { font-size: 18px; color: var(--muted); font-weight: 600; }
+  .bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 12px 0; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s linear; }
+  canvas { width: 100%; height: 140px; display: block; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+  .stat { text-align: center; }
+  .stat .k { color: var(--muted); font-size: 12px; }
+  .stat .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .results { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .result { text-align: center; }
+  .result .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .result .k { color: var(--muted); font-size: 13px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .error { color: var(--danger); margin-top: 10px; min-height: 1em; }
+  @media (max-width: 520px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .speed { font-size: 44px; }
+    .result .v { font-size: 20px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Bandwidth Test</h1>
+  <p class="sub">Measure download and upload throughput to this server, with an adjustable bandwidth limit.</p>
+
+  <section class="card">
+    <label for="capNum">Max bandwidth</label>
+    <div class="row">
+      <input type="range" id="capRange" min="0" max="1000" step="1">
+      <input type="number" id="capNum" min="1" step="1" value="100"> Mbps
+      <label class="check"><input type="checkbox" id="capUnlimited"> Unlimited</label>
+    </div>
+    <div class="hint" id="capHint"></div>
+    <div class="row">
+      <label for="duration" style="margin:0">Duration</label>
+      <select id="duration">
+        <option value="5">5 s</option>
+        <option value="10" selected>10 s</option>
+        <option value="20">20 s</option>
+        <option value="30">30 s</option>
+      </select>
+    </div>
+    <div class="row">
+      <button class="primary" id="btnBoth">Run full test</button>
+      <button id="btnDown">Download only</button>
+      <button id="btnUp">Upload only</button>
+      <button class="stop" id="btnStop" disabled>Stop</button>
+    </div>
+    <div class="error" id="error"></div>
+  </section>
+
+  <section class="card meter">
+    <div class="phase" id="phase">Ready</div>
+    <div class="speed"><span id="speed">0.0</span> <small>Mbps</small></div>
+    <div class="bar"><div id="progress"></div></div>
+    <canvas id="graph"></canvas>
+    <div class="stats">
+      <div class="stat"><div class="k">Average</div><div class="v" id="avg">–</div></div>
+      <div class="stat"><div class="k">Peak</div><div class="v" id="peak">–</div></div>
+      <div class="stat"><div class="k">Transferred</div><div class="v" id="xfer">–</div></div>
+      <div class="stat"><div class="k">Limit</div><div class="v" id="limit">–</div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="results">
+      <div class="result"><div class="v" id="resDown">–</div><div class="k">Download (Mbps)</div></div>
+      <div class="result"><div class="v" id="resUp">–</div><div class="k">Upload (Mbps)</div></div>
+      <div class="result"><div class="v" id="resPing">–</div><div class="k">Latency (ms)</div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Time</th><th>Test</th><th>Source</th><th>Destination</th><th>Limit</th><th>Avg</th><th>Peak</th><th>Data</th></tr></thead>
+      <tbody id="history"><tr><td colspan="8" class="hint">No tests yet.</td></tr></tbody>
+    </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const BYTES_PER_MBIT = 125000;
+const MAX_UPLOAD_CHUNK = 32 * 1024 * 1024;
+const TICK_MS = 200;
+
+let serverCap = 0;
+let controller = null;
+
+// ---- Bandwidth limit controls (log-scale slider, 1 – 10,000 Mbps) ----
+const toSlider = mbps => Math.round(Math.log10(Math.max(1, mbps)) / 4 * 1000);
+const fromSlider = v => {
+  const m = Math.pow(10, v / 1000 * 4);
+  return m < 10 ? Math.round(m * 10) / 10 : Math.round(m);
+};
+
+function getCap() {
+  let cap = $('capUnlimited').checked ? 0 : Math.max(0, Number($('capNum').value) || 0);
+  if (serverCap > 0 && (cap === 0 || cap > serverCap)) cap = serverCap;
+  return cap;
+}
+
+function updateCapUI() {
+  const unlimited = $('capUnlimited').checked;
+  $('capRange').disabled = $('capNum').disabled = unlimited || controller !== null;
+  const cap = getCap();
+  let hint = cap ? `Tests will use at most ${cap} Mbps (${fmtBytes(cap * BYTES_PER_MBIT)}/s).`
+                 : 'Tests will use as much bandwidth as the connection allows.';
+  if (serverCap) hint += ` Server limit: ${serverCap} Mbps.`;
+  $('capHint').textContent = hint;
+}
+
+$('capRange').addEventListener('input', e => { $('capNum').value = fromSlider(+e.target.value); updateCapUI(); });
+$('capNum').addEventListener('input', e => { $('capRange').value = toSlider(+e.target.value); updateCapUI(); });
+$('capUnlimited').addEventListener('change', updateCapUI);
+$('capRange').value = toSlider(+$('capNum').value);
+
+// ---- Formatting ----
+function fmtBytes(b) {
+  const u = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (b >= 1000 && i < u.length - 1) { b /= 1000; i++; }
+  return `${b.toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+const fmtMbps = m => m >= 100 ? m.toFixed(0) : m.toFixed(1);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ---- Throughput meter ----
+class Meter {
+  constructor(kind, cap, duration) {
+    Object.assign(this, { kind, cap, duration, bytes: 0, peak: 0, samples: [], series: [], t0: null, t1: null });
+  }
+  start() { this.t0 = performance.now(); this.samples.push([0, 0]); }
+  finish() { if (this.t0 !== null && this.t1 === null) this.t1 = performance.now(); }
+  elapsed() { return this.t0 === null ? 0 : ((this.t1 ?? performance.now()) - this.t0) / 1000; }
+  add(n) { this.bytes += n; }
+  average() { const t = this.elapsed(); return t > 0 ? this.bytes * 8 / 1e6 / t : 0; }
+  tick() {
+    if (this.t0 === null) return 0;
+    const t = this.elapsed();
+    this.samples.push([t, this.bytes]);
+    // Current speed over the last ~1 s
+    let i = this.samples.length - 1;
+    while (i > 0 && t - this.samples[i - 1][0] <= 1) i--;
+    const [t1, b1] = this.samples[Math.max(0, i - 1)];
+    const cur = t > t1 ? (this.bytes - b1) * 8 / 1e6 / (t - t1) : 0;
+    if (t >= 1) this.peak = Math.max(this.peak, cur);
+    this.series.push([t, cur]);
+    return cur;
+  }
+}
+
+// ---- Graph ----
+function drawGraph(meter) {
+  const c = $('graph'), dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr; c.height = h * dpr;
+  const ctx = c.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const css = getComputedStyle(document.documentElement);
+  const color = css.getPropertyValue(meter && meter.kind === 'upload' ? '--up' : '--down').trim();
+  ctx.strokeStyle = css.getPropertyValue('--border').trim();
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, h - .5); ctx.lineTo(w, h - .5); ctx.stroke();
+  if (!meter || !meter.series.length) return;
+
+  const maxV = Math.max(meter.cap, ...meter.series.map(p => p[1]), 1) * 1.15;
+  const x = t => t / meter.duration * w;
+  const y = v => h - 4 - v / maxV * (h - 12);
+
+  if (meter.cap) {
+    ctx.strokeStyle = css.getPropertyValue('--cap').trim();
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(0, y(meter.cap)); ctx.lineTo(w, y(meter.cap)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText(`limit ${meter.cap} Mbps`, 4, y(meter.cap) - 4);
+  }
+  ctx.strokeStyle = color; ctx.lineWidth = 2;
+  ctx.beginPath();
+  meter.series.forEach(([t, v], i) => i ? ctx.lineTo(x(t), y(v)) : ctx.moveTo(x(t), y(v)));
+  ctx.stroke();
+  ctx.lineTo(x(meter.series.at(-1)[0]), h); ctx.lineTo(x(meter.series[0][0]), h); ctx.closePath();
+  ctx.globalAlpha = .12; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+}
+
+function render(meter, cur) {
+  $('speed').textContent = fmtMbps(cur);
+  $('avg').textContent = meter.t0 ? fmtMbps(meter.average()) + ' Mbps' : '–';
+  $('peak').textContent = meter.peak ? fmtMbps(meter.peak) + ' Mbps' : '–';
+  $('xfer').textContent = fmtBytes(meter.bytes);
+  $('limit').textContent = meter.cap ? meter.cap + ' Mbps' : 'None';
+  $('progress').style.width = Math.min(100, meter.elapsed() / meter.duration * 100) + '%';
+  drawGraph(meter);
+}
+
+// ---- Tests ----
+async function measureLatency(signal) {
+  const times = [];
+  for (let i = 0; i < 6; i++) {
+    const t = performance.now();
+    await fetch(`ping?r=${Math.random()}`, { cache: 'no-store', signal });
+    if (i > 0) times.push(performance.now() - t); // first one warms the connection
+  }
+  times.sort((a, b) => a - b);
+  return times[Math.floor(times.length / 2)];
+}
+
+async function runDownload(meter, signal) {
+  const res = await fetch(`download?duration=${meter.duration}&mbps=${meter.cap}&r=${Math.random()}`,
+                          { cache: 'no-store', signal });
+  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
+  meter.start();
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    meter.add(value.byteLength);
+  }
+}
+
+let randomData = null;
+function randomBlob(size) {
+  if (!randomData) {
+    randomData = new Uint8Array(MAX_UPLOAD_CHUNK);
+    for (let i = 0; i < randomData.length; i += 65536) crypto.getRandomValues(randomData.subarray(i, i + 65536));
+  }
+  return new Blob([randomData.subarray(0, size)]);
+}
+
+function postChunk(blob, meter, endAt, signal) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let sent = 0;
+    const credit = n => { meter.add(n - sent); sent = n; };
+    const timer = setTimeout(() => xhr.abort(), Math.max(0, endAt - performance.now()));
+    const onAbort = () => xhr.abort();
+    signal.addEventListener('abort', onAbort, { once: true });
+    xhr.open('POST', `upload?mbps=${meter.cap}&r=${Math.random()}`);
+    xhr.upload.onprogress = e => credit(e.loaded);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) { credit(blob.size); resolve(); }
+      else reject(new Error(`Upload failed: HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error('Upload failed: network error'));
+    xhr.onabort = () => resolve();
+    xhr.onloadend = () => { clearTimeout(timer); signal.removeEventListener('abort', onAbort); };
+    xhr.send(blob);
+  });
+}
+
+async function runUpload(meter, signal) {
+  const bps = meter.cap * BYTES_PER_MBIT;
+  // Limited: chunks of ~0.2 s at the cap. Unlimited: start at 1 MB and grow.
+  let size = bps ? Math.min(MAX_UPLOAD_CHUNK, Math.max(16384, Math.round(bps * 0.2))) : 1 << 20;
+  meter.start();
+  const endAt = performance.now() + meter.duration * 1000;
+  while (!signal.aborted && performance.now() < endAt) {
+    if (bps) {
+      // Pace: don't let total bytes sent run ahead of cap × elapsed time.
+      const aheadMs = meter.bytes / bps * 1000 - meter.elapsed() * 1000;
+      if (aheadMs > 0) await sleep(Math.min(aheadMs, endAt - performance.now()));
+      if (signal.aborted || performance.now() >= endAt) break;
+    }
+    const t = performance.now();
+    await postChunk(randomBlob(size), meter, endAt, signal);
+    if (!bps && performance.now() - t < 500 && size < MAX_UPLOAD_CHUNK) size *= 2;
+  }
+}
+
+// ---- Shared results (stored on the server, newest first) ----
+function renderHistory(rows) {
+  const tbody = $('history');
+  tbody.innerHTML = '';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="hint">No tests yet.</td></tr>';
+    return;
+  }
+  const timeFmt = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' };
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    const cells = [
+      new Date(r.time * 1000).toLocaleString([], timeFmt),
+      r.kind === 'download' ? 'Download' : 'Upload',
+      r.src,
+      r.dst,
+      r.limit_mbps ? `${r.limit_mbps} Mbps` : 'None',
+      `${fmtMbps(r.avg_mbps)} Mbps${r.stopped ? ' (stopped)' : ''}`,
+      r.peak_mbps ? `${fmtMbps(r.peak_mbps)} Mbps` : '–',
+      fmtBytes(r.bytes),
+    ];
+    for (const text of cells) { const td = document.createElement('td'); td.textContent = text; tr.appendChild(td); }
+    tbody.appendChild(tr);
+  }
+}
+
+function loadHistory() {
+  return fetch('results', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(renderHistory)
+    .catch(() => {});
+}
+
+async function saveResult(meter, stopped) {
+  const row = {
+    kind: meter.kind, limit_mbps: meter.cap, avg_mbps: meter.average(), peak_mbps: meter.peak,
+    bytes: meter.bytes, seconds: meter.elapsed(), stopped,
+  };
+  try {
+    const res = await fetch('results', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(row),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderHistory(await res.json());
+  } catch (err) {
+    $('error').textContent = `Could not save result to the server (${err.message}).`;
+  }
+}
+
+async function runOne(kind, signal) {
+  const meter = new Meter(kind, getCap(), Number($('duration').value));
+  $('phase').textContent = kind === 'download' ? 'Testing download…' : 'Testing upload…';
+  const timer = setInterval(() => render(meter, meter.tick()), TICK_MS);
+  try {
+    await (kind === 'download' ? runDownload(meter, signal) : runUpload(meter, signal));
+  } finally {
+    clearInterval(timer);
+    meter.finish();
+    render(meter, meter.average());
+    if (meter.t0 !== null) {
+      $(kind === 'download' ? 'resDown' : 'resUp').textContent = fmtMbps(meter.average());
+      await saveResult(meter, signal.aborted);
+    }
+  }
+}
+
+async function start(kinds) {
+  controller = new AbortController();
+  setRunning(true);
+  $('error').textContent = '';
+  try {
+    $('phase').textContent = 'Measuring latency…';
+    $('resPing').textContent = (await measureLatency(controller.signal)).toFixed(1);
+    for (const kind of kinds) {
+      if (controller.signal.aborted) break;
+      await runOne(kind, controller.signal);
+    }
+    $('phase').textContent = controller.signal.aborted ? 'Stopped' : 'Done';
+  } catch (err) {
+    if (err.name === 'AbortError') $('phase').textContent = 'Stopped';
+    else { $('phase').textContent = 'Error'; $('error').textContent = err.message; }
+  } finally {
+    controller = null;
+    setRunning(false);
+  }
+}
+
+function setRunning(on) {
+  ['btnBoth', 'btnDown', 'btnUp', 'capUnlimited', 'duration'].forEach(id => $(id).disabled = on);
+  $('btnStop').disabled = !on;
+  updateCapUI();
+}
+
+$('btnBoth').onclick = () => start(['download', 'upload']);
+$('btnDown').onclick = () => start(['download']);
+$('btnUp').onclick = () => start(['upload']);
+$('btnStop').onclick = () => controller && controller.abort();
+window.addEventListener('resize', () => drawGraph(null));
+
+fetch('config', { cache: 'no-store' })
+  .then(r => r.json())
+  .then(cfg => { serverCap = cfg.max_mbps || 0; updateCapUI(); })
+  .catch(() => {});
+updateCapUI();
+drawGraph(null);
+loadHistory();
+</script>
+</body>
+</html>
