@@ -5,6 +5,8 @@ Serves index.html plus these endpoints:
   GET  /download?duration=S&mbps=M  stream random bytes for S seconds, paced to M Mbps (0 = unlimited)
   POST /upload                      read and discard the request body
   GET  /ping                        tiny response for latency measurement
+  POST /begin?test=ID               claim the server for one test; 503 if another test is running
+  POST /end?test=ID                 release it again
   GET  /config                      server limits as JSON
   GET  /results                     recent test results (newest first), shared by all browsers
   POST /results                     store one result; the server adds time and src/dst IPs
@@ -29,6 +31,7 @@ BYTES_PER_MBIT = 125_000
 
 SERVER_CAP_MBPS = 0.0  # set from --max-mbps; 0 = no server-side cap
 IDLE_SECONDS = 2.0  # a flow with no traffic this long is reported as finished
+LEASE_SECONDS = 3.0  # a test with no requests this long loses its claim on the server
 
 
 def fmt_bytes(n):
@@ -142,6 +145,37 @@ class Results:
 RESULTS = None  # created in main() from --results / --keep
 
 
+class Gate:
+    """Lets one test run at a time, so concurrent tests don't split the link and skew results.
+
+    A test is identified by the id the page sends with each request. It holds the gate
+    while its requests keep arriving, and loses it at /end or LEASE_SECONDS after the last one.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.owner = None
+        self.client = None
+        self.last = 0.0
+
+    def claim(self, test, client):
+        """Take or refresh the gate for this test. Returns the busy client's IP, or None on success."""
+        now = time.monotonic()
+        with self.lock:
+            if self.owner not in (None, test) and now - self.last < LEASE_SECONDS:
+                return self.client
+            self.owner, self.client, self.last = test, client, now
+            return None
+
+    def release(self, test):
+        with self.lock:
+            if self.owner == test:
+                self.owner = None
+
+
+GATE = Gate()
+
+
 def effective_mbps(requested):
     """Client-requested rate, clamped to the server cap if one is set."""
     if SERVER_CAP_MBPS > 0 and (requested <= 0 or requested > SERVER_CAP_MBPS):
@@ -180,8 +214,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.startswith(("/ping", "/upload", "/download")):
             super().log_message(fmt, *args)
 
-    def _send(self, code, body=b"", ctype="text/plain; charset=utf-8"):
+    def _send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=()):
         self.send_response(code)
+        for name, value in headers:
+            self.send_header(name, value)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -191,6 +227,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def _params(self):
         return {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+
+    def _test_id(self, params):
+        # Old pages send no id; fall back to the client IP so they still get one test at a time.
+        return params.get("test") or self.client_address[0]
+
+    def _claim(self, params, close=False):
+        """Claim the gate for this request's test; if another test holds it, send 503 and return False."""
+        busy = GATE.claim(self._test_id(params), self.client_address[0])
+        if busy is None:
+            return True
+        BaseHTTPRequestHandler.log_message(
+            self, "rejected %s %s: test from %s is running", self.command, self.path, busy)
+        body = json.dumps({"error": "busy", "client": busy}).encode()
+        headers = [("Retry-After", str(math.ceil(LEASE_SECONDS)))]
+        if close:
+            # Don't read the request body: that would eat into the running test's bandwidth.
+            headers.append(("Connection", "close"))
+            self.close_connection = True
+        self._send(503, body, "application/json", headers)
+        return False
 
     @staticmethod
     def _float(params, key, default):
@@ -205,6 +261,9 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(HERE, "index.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif path == "/ping":
+            params = self._params()
+            if "test" in params:
+                GATE.claim(params["test"], self.client_address[0])  # keeps the claim alive
             self._send(200, b"pong")
         elif path == "/results":
             self._send(200, json.dumps(RESULTS.recent()).encode(), "application/json")
@@ -222,6 +281,12 @@ class Handler(BaseHTTPRequestHandler):
             self._upload()
         elif path == "/results":
             self._post_result()
+        elif path == "/begin":
+            if self._claim(self._params()):
+                self._send(200, b"ok")
+        elif path == "/end":
+            GATE.release(self._test_id(self._params()))
+            self._send(200, b"ok")
         else:
             self._send(404, b"not found")
 
@@ -249,6 +314,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _download(self):
         params = self._params()
+        if not self._claim(params):
+            return
+        test = self._test_id(params)
         duration = min(max(self._float(params, "duration", 10), 1), MAX_DURATION)
         limit = effective_mbps(self._float(params, "mbps", 0))
         pacer = Pacer(limit)
@@ -273,6 +341,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(view[offset:offset + n])
                 offset += n
                 MONITOR.add(client, server, "download", n, limit)
+                GATE.claim(test, client)
                 pacer.account(n)
         except (BrokenPipeError, ConnectionResetError):
             pass  # client stopped the test
@@ -282,11 +351,15 @@ class Handler(BaseHTTPRequestHandler):
         if length is None:
             self._send(411, b"Content-Length required")
             return
+        params = self._params()
+        if not self._claim(params, close=True):
+            return
+        test = self._test_id(params)
         remaining = int(length)
         # Only the server cap is enforced here; the client paces its own requested rate
         # and passes it along just for display.
         pacer = Pacer(SERVER_CAP_MBPS)
-        limit = effective_mbps(self._float(self._params(), "mbps", 0))
+        limit = effective_mbps(self._float(params, "mbps", 0))
         client, server = self.client_address[0], self.connection.getsockname()[0]
         received = 0
         try:
@@ -297,6 +370,7 @@ class Handler(BaseHTTPRequestHandler):
                 remaining -= len(data)
                 received += len(data)
                 MONITOR.add(client, server, "upload", len(data), limit)
+                GATE.claim(test, client)
                 pacer.account(len(data))
         except (BrokenPipeError, ConnectionResetError):
             return

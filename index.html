@@ -143,6 +143,7 @@ const TICK_MS = 200;
 
 let serverCap = 0;
 let controller = null;
+let testId = '';  // sent with every test request; the server runs one test at a time
 
 // ---- Bandwidth limit controls (log-scale slider, 1 – 10,000 Mbps) ----
 const toSlider = mbps => Math.round(Math.log10(Math.max(1, mbps)) / 4 * 1000);
@@ -253,11 +254,30 @@ function render(meter, cur) {
 }
 
 // ---- Tests ----
+// The server answers 503 while another browser's test is running.
+async function busyError(res) {
+  let who = '';
+  try { const info = await res.json(); if (info.client) who = ` from ${info.client}`; } catch (_) {}
+  const err = new Error(`The server is busy with another test${who}. Try again in a few seconds.`);
+  err.busy = true;
+  return err;
+}
+
+async function claimServer(signal) {
+  const res = await fetch(`begin?test=${testId}`, { method: 'POST', cache: 'no-store', signal });
+  if (res.status === 503) throw await busyError(res);
+  if (!res.ok) throw new Error(`Could not start the test: HTTP ${res.status}`);
+}
+
+function releaseServer(id) {
+  fetch(`end?test=${id}`, { method: 'POST', keepalive: true }).catch(() => {});
+}
+
 async function measureLatency(signal) {
   const times = [];
   for (let i = 0; i < 6; i++) {
     const t = performance.now();
-    await fetch(`ping?r=${Math.random()}`, { cache: 'no-store', signal });
+    await fetch(`ping?test=${testId}&r=${Math.random()}`, { cache: 'no-store', signal });
     if (i > 0) times.push(performance.now() - t); // first one warms the connection
   }
   times.sort((a, b) => a - b);
@@ -265,8 +285,9 @@ async function measureLatency(signal) {
 }
 
 async function runDownload(meter, signal) {
-  const res = await fetch(`download?duration=${meter.duration}&mbps=${meter.cap}&r=${Math.random()}`,
+  const res = await fetch(`download?test=${testId}&duration=${meter.duration}&mbps=${meter.cap}&r=${Math.random()}`,
                           { cache: 'no-store', signal });
+  if (res.status === 503) throw await busyError(res);
   if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
   meter.start();
   const reader = res.body.getReader();
@@ -294,10 +315,11 @@ function postChunk(blob, meter, endAt, signal) {
     const timer = setTimeout(() => xhr.abort(), Math.max(0, endAt - performance.now()));
     const onAbort = () => xhr.abort();
     signal.addEventListener('abort', onAbort, { once: true });
-    xhr.open('POST', `upload?mbps=${meter.cap}&r=${Math.random()}`);
+    xhr.open('POST', `upload?test=${testId}&mbps=${meter.cap}&r=${Math.random()}`);
     xhr.upload.onprogress = e => credit(e.loaded);
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) { credit(blob.size); resolve(); }
+      else if (xhr.status === 503) busyError(new Response(xhr.responseText)).then(reject);
       else reject(new Error(`Upload failed: HTTP ${xhr.status}`));
     };
     xhr.onerror = () => reject(new Error('Upload failed: network error'));
@@ -379,13 +401,17 @@ async function runOne(kind, signal) {
   const meter = new Meter(kind, getCap(), Number($('duration').value));
   $('phase').textContent = kind === 'download' ? 'Testing download…' : 'Testing upload…';
   const timer = setInterval(() => render(meter, meter.tick()), TICK_MS);
+  let busy = false;
   try {
     await (kind === 'download' ? runDownload(meter, signal) : runUpload(meter, signal));
+  } catch (err) {
+    busy = !!err.busy;
+    throw err;
   } finally {
     clearInterval(timer);
     meter.finish();
     render(meter, meter.average());
-    if (meter.t0 !== null) {
+    if (meter.t0 !== null && !busy) {
       $(kind === 'download' ? 'resDown' : 'resUp').textContent = fmtMbps(meter.average());
       await saveResult(meter, signal.aborted);
     }
@@ -394,9 +420,12 @@ async function runOne(kind, signal) {
 
 async function start(kinds) {
   controller = new AbortController();
+  testId = Date.now().toString(36) + Math.random().toString(36).slice(2);
   setRunning(true);
   $('error').textContent = '';
   try {
+    $('phase').textContent = 'Connecting…';
+    await claimServer(controller.signal);
     $('phase').textContent = 'Measuring latency…';
     $('resPing').textContent = (await measureLatency(controller.signal)).toFixed(1);
     for (const kind of kinds) {
@@ -406,8 +435,9 @@ async function start(kinds) {
     $('phase').textContent = controller.signal.aborted ? 'Stopped' : 'Done';
   } catch (err) {
     if (err.name === 'AbortError') $('phase').textContent = 'Stopped';
-    else { $('phase').textContent = 'Error'; $('error').textContent = err.message; }
+    else { $('phase').textContent = err.busy ? 'Busy' : 'Error'; $('error').textContent = err.message; }
   } finally {
+    releaseServer(testId);
     controller = null;
     setRunning(false);
   }

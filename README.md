@@ -17,6 +17,7 @@ Then open `http://<server-ip>:8080/` in a browser.
 - A bandwidth limit you set on the page, from 1 to 10,000 Mbps on a log-scale slider, or no limit
 - A live throughput graph with average and peak speeds
 - Results saved on the server and shown to every browser, including the client and server IPs
+- One test at a time: while a test is running, other browsers are told the server is busy, so tests don't share the link and skew each other's results
 - A live bandwidth readout in the server console for each test, which can also be written to a log file
 
 ## Options
@@ -45,11 +46,15 @@ python3 server.py --port 8080 --max-mbps 500 --log bandwidth.log
 | `GET` | `/download?duration=S&mbps=M` | Streams random bytes for `S` seconds, paced to `M` Mbps (`0` = no limit) |
 | `POST` | `/upload` | Reads and discards the request body |
 | `GET` | `/ping` | Returns a tiny response, used to measure latency |
+| `POST` | `/begin?test=ID` | Claims the server for one test. Returns `503` if another test is running |
+| `POST` | `/end?test=ID` | Releases the server when the test is done |
 | `GET` | `/config` | Returns the server limits as JSON |
 | `GET` | `/results` | Returns recent results as JSON, newest first |
 | `POST` | `/results` | Stores one result. The server adds the time and the source and destination IPs |
 
 Download payloads are random bytes, so compression cannot inflate the measured speed. A single test runs for at most 60 seconds.
+
+Only one test runs at a time. The page sends a test ID with every request. While one test is running, `/begin`, `/download` and `/upload` requests with any other ID get `503`. A test releases the server at `/end`. If its browser goes away without calling `/end`, the server is released 3 seconds after that test's last request.
 
 ## Requirements
 
