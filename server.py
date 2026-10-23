@@ -23,6 +23,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+VERSION = "1.1"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BLOB = os.urandom(1024 * 1024)  # incompressible payload, reused
 MAX_CHUNK = 64 * 1024
@@ -207,7 +208,7 @@ class Pacer:
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "BandwidthTest/1.0"
+    server_version = f"BandwidthTest/{VERSION}"
 
     def log_message(self, fmt, *args):
         # Test traffic is reported by the Monitor instead of per request.
@@ -268,7 +269,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/results":
             self._send(200, json.dumps(RESULTS.recent()).encode(), "application/json")
         elif path == "/config":
-            body = json.dumps({"max_mbps": SERVER_CAP_MBPS, "max_duration": MAX_DURATION})
+            body = json.dumps({"version": VERSION, "max_mbps": SERVER_CAP_MBPS,
+                               "max_duration": MAX_DURATION})
             self._send(200, body.encode(), "application/json")
         elif path == "/download":
             self._download()
@@ -380,6 +382,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global SERVER_CAP_MBPS, RESULTS
     ap = argparse.ArgumentParser(description="Bandwidth test server")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--max-mbps", type=float, default=0,
@@ -401,7 +404,7 @@ def main():
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     cap = f"{args.max_mbps:g} Mbps" if args.max_mbps else "none"
-    print(f"Bandwidth test on http://{args.host}:{args.port}  (server cap: {cap})")
+    print(f"Bandwidth test v{VERSION} on http://{args.host}:{args.port}  (server cap: {cap})")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

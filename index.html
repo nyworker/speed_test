@@ -65,6 +65,8 @@
   table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .warn { color: var(--danger); font-weight: 600; font-size: 13px; margin-top: 6px; }
+  .version { color: var(--muted); font-size: 12px; text-align: center; margin-top: 24px; }
   .error { color: var(--danger); margin-top: 10px; min-height: 1em; }
   @media (max-width: 520px) {
     .stats { grid-template-columns: repeat(2, 1fr); }
@@ -82,15 +84,16 @@
     <label for="capNum">Max bandwidth</label>
     <div class="row">
       <input type="range" id="capRange" min="0" max="1000" step="1">
-      <input type="number" id="capNum" min="1" step="1" value="100"> Mbps
+      <input type="number" id="capNum" min="1" step="1" value="200"> Mbps
       <label class="check"><input type="checkbox" id="capUnlimited"> Unlimited</label>
     </div>
     <div class="hint" id="capHint"></div>
+    <div class="warn" id="capWarn" hidden>Speed test with high bandwidth could affect other users</div>
     <div class="row">
       <label for="duration" style="margin:0">Duration</label>
       <select id="duration">
-        <option value="5">5 s</option>
-        <option value="10" selected>10 s</option>
+        <option value="5" selected>5 s</option>
+        <option value="10">10 s</option>
         <option value="20">20 s</option>
         <option value="30">30 s</option>
       </select>
@@ -133,6 +136,7 @@
     </table>
     </div>
   </section>
+  <div class="version" id="version"></div>
 </main>
 
 <script>
@@ -166,6 +170,7 @@ function updateCapUI() {
                  : 'Tests will use as much bandwidth as the connection allows.';
   if (serverCap) hint += ` Server limit: ${serverCap} Mbps.`;
   $('capHint').textContent = hint;
+  $('capWarn').hidden = cap !== 0 && cap < 500;
 }
 
 $('capRange').addEventListener('input', e => { $('capNum').value = fromSlider(+e.target.value); updateCapUI(); });
@@ -457,7 +462,11 @@ window.addEventListener('resize', () => drawGraph(null));
 
 fetch('config', { cache: 'no-store' })
   .then(r => r.json())
-  .then(cfg => { serverCap = cfg.max_mbps || 0; updateCapUI(); })
+  .then(cfg => {
+    serverCap = cfg.max_mbps || 0;
+    if (cfg.version) $('version').textContent = `Version ${cfg.version}`;
+    updateCapUI();
+  })
   .catch(() => {});
 updateCapUI();
 drawGraph(null);

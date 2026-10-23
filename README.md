@@ -48,7 +48,7 @@ python3 server.py --port 8080 --max-mbps 500 --log bandwidth.log
 | `GET` | `/ping` | Returns a tiny response, used to measure latency |
 | `POST` | `/begin?test=ID` | Claims the server for one test. Returns `503` if another test is running |
 | `POST` | `/end?test=ID` | Releases the server when the test is done |
-| `GET` | `/config` | Returns the server limits as JSON |
+| `GET` | `/config` | Returns the server version and limits as JSON |
 | `GET` | `/results` | Returns recent results as JSON, newest first |
 | `POST` | `/results` | Stores one result. The server adds the time and the source and destination IPs |
 
